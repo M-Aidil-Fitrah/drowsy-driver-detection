@@ -4,6 +4,9 @@ DROWSY DRIVER DETECTION SYSTEM
 =============================================================================
 Sistem deteksi kantuk pengemudi menggunakan Vision Transformer (ViT)
 
+Author: [Your Name]
+Date: December 2024
+
 Topik Computer Vision yang Tercakup:
 1. Object Detection - Face detection menggunakan Haar Cascade
 2. Object Tracking - Tracking wajah frame-by-frame
@@ -78,7 +81,7 @@ class DrowsyDriverDetector:
         # Detection parameters
         self.drowsy_counter = 0  # Counter untuk tracking drowsiness
         self.drowsy_threshold = 15  # Alert jika drowsy 15 frames berturut-turut (~0.5 detik at 30 FPS)
-        self.prediction_interval = 3  # Predict setiap 3 frame (untuk performa)
+        self.prediction_interval = 10  # Predict setiap 10 frame (untuk performa lebih baik di CPU)
         self.frame_count = 0
         
         # Statistics
@@ -119,12 +122,22 @@ class DrowsyDriverDetector:
             probabilities = torch.nn.functional.softmax(logits, dim=-1)[0]
             confidence = probabilities[predicted_class].item()
             
-            label = self.model.config.id2label[str(predicted_class)]
+            # Fix: Handle both integer and string keys in id2label
+            # Try integer key first, then string key
+            if predicted_class in self.model.config.id2label:
+                label = self.model.config.id2label[predicted_class]
+            elif str(predicted_class) in self.model.config.id2label:
+                label = self.model.config.id2label[str(predicted_class)]
+            else:
+                # Fallback: manual mapping
+                label = "drowsy" if predicted_class == 1 else "notdrowsy"
             
             return label, confidence
             
         except Exception as e:
             print(f"⚠️ Prediction error: {e}")
+            import traceback
+            traceback.print_exc()
             return None, 0.0
     
     def draw_info(self, frame, face_coords, label, confidence, fps):
@@ -134,7 +147,7 @@ class DrowsyDriverDetector:
         Args:
             frame: Video frame
             face_coords: Tuple (x, y, w, h) koordinat face
-            label: Prediction label
+            label: Prediction label (bisa None)
             confidence: Confidence score
             fps: Frame per second
             
@@ -142,6 +155,11 @@ class DrowsyDriverDetector:
             frame: Frame dengan overlay informasi
         """
         height, width = frame.shape[:2]
+        
+        # Safety check untuk label None
+        if label is None:
+            label = "processing"
+            confidence = 0.0
         
         # Draw bounding box pada wajah
         if face_coords is not None:
@@ -225,6 +243,21 @@ class DrowsyDriverDetector:
             print("❌ Error: Cannot open camera/video!")
             return
         
+        # ========== OPTIMASI PERFORMA ==========
+        # Reduce webcam resolution untuk performa lebih baik
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Width 640px (dari default 1280/1920)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)  # Height 480px (dari default 720/1080)
+        cap.set(cv2.CAP_PROP_FPS, 30)  # Set FPS ke 30
+        
+        # Print webcam info
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = int(cap.get(cv2.CAP_PROP_FPS))
+        print(f"📷 Webcam: {actual_width}x{actual_height} @ {actual_fps} FPS")
+        print(f"⚙️  Prediction interval: Every {self.prediction_interval} frames")
+        print(f"⚙️  Device: {self.device}")
+        # ========================================
+        
         # Setup video writer jika output_path diberikan
         video_writer = None
         if output_path:
@@ -237,6 +270,9 @@ class DrowsyDriverDetector:
         
         # Setup log file jika save_log True
         if save_log:
+            # Auto create folder data/ jika belum ada
+            os.makedirs("data", exist_ok=True)
+            
             log_file = open("data/drowsy_log.csv", "w")
             log_file.write("timestamp,frame,label,confidence,drowsy_counter,alert\n")
             print(f"📝 Saving log to: data/drowsy_log.csv")
@@ -282,6 +318,13 @@ class DrowsyDriverDetector:
                         # Gunakan prediksi terakhir
                         label = self.last_prediction
                         confidence = self.last_confidence
+                    
+                    # Skip jika label masih None (first frames atau error)
+                    if label is None:
+                        cv2.putText(frame, "Processing...", (50, 50),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                        cv2.imshow('Drowsy Driver Detection System', frame)
+                        continue
                     
                     # Update drowsy counter dan alert logic
                     if label == "drowsy":
